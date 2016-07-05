@@ -1,5 +1,5 @@
-import _get from 'lodash/get';
-import mapValues from 'lodash/mapValues';
+import _get from '../utils/get';
+import mapValues from '../utils/map-values';
 
 import actionTypes from '../action-types';
 import batchActions from './batch-actions';
@@ -85,9 +85,11 @@ const asyncSetValidity = (model, validator) => (dispatch, getState) => {
 
   dispatch(setPending(model, true));
 
-  const done = validity => {
-    dispatch(setValidity(model, validity));
-    dispatch(setPending(model, false));
+  const done = (validity) => {
+    dispatch(batchActions.batch(model, [
+      setValidity(model, validity),
+      setPending(model, false),
+    ]));
   };
 
   const immediateResult = validator(value, done);
@@ -130,7 +132,7 @@ const submit = (model, promise, options = {}) => dispatch => {
   }).catch(error => {
     dispatch(batchActions.batch(model, [
       setSubmitFailed(model),
-      errorsAction(model, error, { errors: true }),
+      errorsAction(model, error),
     ]));
   });
 
@@ -175,7 +177,9 @@ const validateFields = (model, fieldValidators, options = {}) => (dispatch, getS
 
   if (validCB || invalidCB) {
     const form = getForm(getState(), model);
-    const formValid = form ? form.valid : true;
+    const formValid = (form && !fieldsValidity.hasOwnProperty(''))
+      ? form.valid
+      : true;
     const fieldsValid = options.errors
       ? !isInvalid(fieldsValidity)
       : isValid(fieldsValidity);

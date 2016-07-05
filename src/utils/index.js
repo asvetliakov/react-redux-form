@@ -1,11 +1,12 @@
 import endsWith from 'lodash/endsWith';
-import mapValues from 'lodash/mapValues';
+import mapValues from '../utils/map-values';
 import isPlainObject from 'lodash/isPlainObject';
 import every from 'lodash/every';
 import some from 'lodash/some';
-import findKey from 'lodash/findKey';
-import get from 'lodash/get';
-import toPath from 'lodash/toPath';
+import _get from '../utils/get';
+import toPath from '../utils/to-path';
+import pathStartsWith from '../utils/path-starts-with';
+import memoize from 'lodash/memoize';
 
 import { getField, initialFieldState } from '../reducers/form-reducer';
 
@@ -30,7 +31,9 @@ function isEvent(event) {
 }
 
 function getEventValue(event) {
-  if (!event.target) {
+  const { target } = event;
+
+  if (!target) {
     if (!event.nativeEvent) {
       return undefined;
     }
@@ -38,30 +41,94 @@ function getEventValue(event) {
     return event.nativeEvent.text;
   }
 
-  if (event.target.multiple) {
-    return [...event.target.selectedOptions].map(option => option.value);
+  if (target.type === 'file') {
+    return [...target.files]
+      || (target.dataTransfer && [...target.dataTransfer.files]);
   }
 
-  return event.target.value;
+  if (target.multiple) {
+    return [...target.selectedOptions].map(option => option.value);
+  }
+
+  return target.value;
 }
 
 function getValue(value) {
   return isEvent(value) ? getEventValue(value) : value;
 }
 
+function getFormStateKey(state, model, currentPath = '') {
+  const deepCandidateKeys = [];
+  let result = null;
+
+  Object.keys(state).some((key) => {
+    const subState = state[key];
+
+    if (subState && subState.model) {
+      if (pathStartsWith(model, subState.model)) {
+        result = currentPath
+          ? [currentPath, key].join('.')
+          : key;
+
+        return true;
+      }
+
+      return false;
+    }
+
+    if (isPlainObject(subState)) {
+      deepCandidateKeys.push(key);
+    }
+
+    return false;
+  });
+
+  if (result) return result;
+
+  deepCandidateKeys.some((key) => {
+    result = getFormStateKey(state[key], model,
+      currentPath ? [currentPath, key].join('.') : key);
+
+    return !!result;
+  });
+
+  if (result) return result;
+
+  return null;
+}
+
+const formStateKeyCaches = {};
+
+function getFormStateKeyCached(state, model) {
+  if (!formStateKeyCaches.hasOwnProperty(model)) {
+    formStateKeyCaches[model] = new memoize.Cache();
+  }
+
+  const cache = formStateKeyCaches[model];
+  if (cache.has(model)) {
+    return cache.get(model);
+  }
+
+  const formStateKey = getFormStateKey(state, model);
+  cache.set(model, formStateKey);
+  return formStateKey;
+}
+
 function getForm(state, model) {
-  const path = model.split('.');
-  const modelRoot = path.length === 1 ? state : get(state, path.slice(0, path.length - 1));
-  const formStateKey = findKey(modelRoot, { model });
-  return modelRoot && modelRoot[formStateKey];
+  const formStateKey = getFormStateKeyCached(state, model);
+
+  return _get(state, formStateKey);
 }
 
 function getFieldFromState(state, model) {
-  const form = getForm(state, toPath(model)[0]);
+  const form = getForm(state, model);
 
   if (!form) return null;
 
-  return getField(form, toPath(model).slice(1));
+  const formPath = toPath(form.model);
+  const fieldPath = toPath(model).slice(formPath.length);
+
+  return getField(form, fieldPath.length ? [fieldPath.join('.')] : []);
 }
 
 function getValidity(validators, value) {
@@ -74,6 +141,22 @@ function getValidity(validators, value) {
   return mapValues(validators, (validator) => getValidity(validator, modelValue));
 }
 
+function invertValidators(validators) {
+  if (typeof validators === 'function') {
+    return (val) => !validators(val);
+  }
+
+  return mapValues(validators, invertValidators);
+}
+
+function invertValidity(validity) {
+  if (isPlainObject(validity)) {
+    return mapValues(validity, invertValidity);
+  }
+
+  return !validity;
+}
+
 function isValid(validity) {
   if (isPlainObject(validity)) {
     return every(validity, isValid);
@@ -84,10 +167,16 @@ function isValid(validity) {
 
 function isInvalid(errors) {
   if (isPlainObject(errors)) {
-    return some(errors);
+    return some(errors, isInvalid);
   }
 
-  return !errors;
+  return !!errors;
+}
+
+function getModelPath(model, field = '') {
+  return field.length
+    ? `${model}.${field}`
+    : model;
 }
 
 export {
@@ -102,4 +191,9 @@ export {
   isInvalid,
   getForm,
   getFieldFromState,
+  invertValidators,
+  invertValidity,
+  getModelPath,
+  pathStartsWith,
+  getFormStateKey,
 };

@@ -1,26 +1,29 @@
 import React, { Component, PropTypes } from 'react';
+import shallowCompare from 'react/lib/shallowCompare';
 import connect from 'react-redux/lib/components/connect';
-import _get from 'lodash/get';
-import mapValues from 'lodash/mapValues';
+import _get from '../utils/get';
+import mapValues from '../utils/map-values';
+import merge from '../utils/merge';
+import identity from 'lodash/identity';
 
 import actions from '../actions';
-import { getValidity, getForm } from '../utils';
-
-function dispatchValidCallback(modelValue, callback) {
-  return callback
-    ? () => callback(modelValue)
-    : undefined;
-}
-
-function dispatchInvalidCallback(model, dispatch) {
-  return () => dispatch(actions.setSubmitFailed(model));
-}
+import {
+  getValidity,
+  getForm,
+  invertValidators,
+  invertValidity,
+} from '../utils';
+import { getField } from '../reducers/form-reducer';
 
 class Form extends Component {
   constructor(props) {
     super(props);
 
     this.handleSubmit = this.handleSubmit.bind(this);
+    this.handleReset = this.handleReset.bind(this);
+    this.handleValidSubmit = this.handleValidSubmit.bind(this);
+    this.handleInvalidSubmit = this.handleInvalidSubmit.bind(this);
+    this.attachNode = this.attachNode.bind(this);
   }
 
   componentDidMount() {
@@ -35,47 +38,130 @@ class Form extends Component {
     this.validate(nextProps);
   }
 
+  shouldComponentUpdate(nextProps, nextState) {
+    return shallowCompare(this, nextProps, nextState);
+  }
+
+  attachNode(node) {
+    if (!node) return;
+
+    this._node = node;
+
+    this._node.submit = this.handleSubmit;
+  }
+
   validate(nextProps, initial = false) {
     const {
       validators,
       errors,
       model,
       dispatch,
+      formValue,
+      modelValue,
     } = this.props;
 
-    /* eslint-disable consistent-return */
-    mapValues(validators, (validator, field) => {
-      const fieldModel = [model, field].join('.');
-      const value = _get(nextProps, fieldModel);
+    if (!formValue) return;
 
-      if (!initial && (value === _get(this.props, fieldModel))) return;
+    if (!validators && !errors && (modelValue !== nextProps.modelValue)) {
+      if (!formValue.valid) {
+        dispatch(actions.setValidity(model, true));
+      }
 
-      const fieldValidity = getValidity(validator, value);
+      return;
+    }
 
-      dispatch(actions.setValidity(fieldModel, fieldValidity));
+    let validityChanged = false;
+
+    const fieldsValidity = mapValues(validators, (validator, field) => {
+      const nextValue = field
+        ? _get(nextProps.modelValue, field)
+        : nextProps.modelValue;
+
+      const currentValue = field
+        ? _get(modelValue, field)
+        : modelValue;
+
+      if (!initial && (nextValue === currentValue)) {
+        return getField(formValue, field).validity;
+      }
+
+      validityChanged = true;
+
+      const fieldValidity = getValidity(validator, nextValue);
 
       return fieldValidity;
     });
 
-    mapValues(errors, (errorValidator, field) => {
-      const fieldModel = [model, field].join('.');
-      const value = _get(nextProps, fieldModel);
+    const fieldsErrorsValidity = mapValues(errors, (errorValidator, field) => {
+      const nextValue = field
+        ? _get(nextProps.modelValue, field)
+        : nextProps.modelValue;
 
-      if (!initial && (value === _get(this.props, fieldModel))) return;
+      const currentValue = field
+        ? _get(modelValue, field)
+        : modelValue;
 
-      const fieldErrors = getValidity(errorValidator, value);
+      if (!initial && (nextValue === currentValue)) {
+        return getField(formValue, field).errors;
+      }
 
-      dispatch(actions.setValidity(fieldModel, fieldErrors, {
-        errors: true,
-      }));
+      validityChanged = true;
+
+      const fieldErrors = getValidity(errorValidator, nextValue);
 
       return fieldErrors;
     });
-    /* eslint-enable consistent-return */
+
+    const fieldsErrors = merge(
+      invertValidity(fieldsValidity),
+      fieldsErrorsValidity
+    );
+
+    // Compute form-level validity
+    if (!fieldsValidity.hasOwnProperty('') && !fieldsErrorsValidity.hasOwnProperty('')) {
+      fieldsErrors[''] = false;
+    }
+
+    if (validityChanged) {
+      dispatch(actions.setFieldsErrors(model, fieldsErrors));
+    }
+  }
+
+  handleValidSubmit() {
+    const {
+      dispatch,
+      model,
+      modelValue,
+      onSubmit = identity,
+    } = this.props;
+
+    dispatch(actions.setPending(model));
+
+    return onSubmit(modelValue);
+  }
+
+  handleInvalidSubmit() {
+    const {
+      dispatch,
+      model,
+    } = this.props;
+
+    dispatch(actions.setSubmitFailed(model));
+  }
+
+  handleReset(e) {
+    if (e) e.preventDefault();
+
+    const {
+      model,
+      dispatch,
+    } = this.props;
+
+    dispatch(actions.reset(model));
   }
 
   handleSubmit(e) {
-    e.preventDefault();
+    if (e) e.preventDefault();
 
     const {
       model,
@@ -84,6 +170,7 @@ class Form extends Component {
       onSubmit,
       dispatch,
       validators,
+      errors: errorValidators,
     } = this.props;
 
     const formValid = formValue
@@ -97,13 +184,17 @@ class Form extends Component {
     }
 
     const validationOptions = {
-      onValid: dispatchValidCallback(modelValue, onSubmit),
-      onInvalid: dispatchInvalidCallback(model, dispatch),
+      onValid: this.handleValidSubmit,
+      onInvalid: this.handleInvalidSubmit,
     };
 
-    dispatch(actions.validateFields(
+    const finalErrorValidators = validators
+      ? merge(invertValidators(validators), errorValidators)
+      : errorValidators;
+
+    dispatch(actions.validateFieldsErrors(
       model,
-      validators,
+      finalErrorValidators,
       validationOptions));
 
     return modelValue;
@@ -111,19 +202,19 @@ class Form extends Component {
 
   render() {
     const { component, children, ...other } = this.props;
+
     return React.createElement(component,
       {
         ...other,
         onSubmit: this.handleSubmit,
+        onReset: this.handleReset,
+        ref: this.attachNode,
       }, children);
   }
 }
 
 Form.propTypes = {
-  component: PropTypes.oneOfType([
-    PropTypes.func,
-    PropTypes.string,
-  ]),
+  component: PropTypes.any,
   validators: PropTypes.object,
   errors: PropTypes.object,
   validateOn: PropTypes.oneOf([
@@ -143,16 +234,15 @@ Form.defaultProps = {
   component: 'form',
 };
 
-function selector(state, { model }) {
+function mapStateToProps(state, { model }) {
   const modelString = typeof model === 'function'
     ? model(state)
     : model;
 
   return {
-    ...state,
     modelValue: _get(state, modelString),
     formValue: getForm(state, modelString),
   };
 }
 
-export default connect(selector)(Form);
+export default connect(mapStateToProps)(Form);

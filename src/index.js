@@ -2,27 +2,28 @@ import actions from './actions';
 import actionTypes from './action-types';
 
 import Field, { controlPropsMap, createFieldClass } from './components/field-component';
+import Control from './components/control-component';
 import Form from './components/form-component';
 import Errors from './components/errors-component';
 
 import modeled from './enhancers/modeled-enhancer';
 
-import {
+import formReducer, {
   createFormReducer,
-  formReducer,
   initialFieldState,
   initialFormState,
   getField,
 } from './reducers/form-reducer';
 
-import {
-  createModelReducer,
-  modelReducer,
-} from './reducers/model-reducer';
+import modelReducer, { createModelReducer } from './reducers/model-reducer';
+
+import modelFormReducer, { modelForm } from './reducers/model-form-reducer';
 
 import {
   track,
 } from './utils/track';
+
+import * as utils from './utils';
 
 export {
   actions,
@@ -33,7 +34,10 @@ export {
   createFormReducer,
   modelReducer,
   createModelReducer,
+  modelFormReducer,
+  modelForm,
   Field,
+  Control,
   Form,
   Errors,
   getField,
@@ -41,4 +45,5 @@ export {
   initialFormState,
   modeled,
   track,
+  utils,
 };

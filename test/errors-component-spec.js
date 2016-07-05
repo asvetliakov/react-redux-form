@@ -15,8 +15,8 @@ describe('<Errors />', () => {
 
   describe('displaying errors from messages', () => {
     const store = applyMiddleware(thunk)(createStore)(combineReducers({
-      testForm: formReducer('test', {}),
-      test: modelReducer('test'),
+      testForm: formReducer('test', { foo: '' }),
+      test: modelReducer('test', { foo: '' }),
     }));
 
     const form = TestUtils.renderIntoDocument(
@@ -115,8 +115,8 @@ describe('<Errors />', () => {
 
   describe('displaying errors from form .errors', () => {
     const store = applyMiddleware(thunk)(createStore)(combineReducers({
-      testForm: formReducer('test', {}),
-      test: modelReducer('test'),
+      testForm: formReducer('test', { foo: '' }),
+      test: modelReducer('test', { foo: '' }),
     }));
 
     let formValid = false;
@@ -159,10 +159,28 @@ describe('<Errors />', () => {
     });
   });
 
+  describe('displaying no errors', () => {
+    const store = applyMiddleware(thunk)(createStore)(combineReducers({
+      testForm: formReducer('test', { foo: '' }),
+      test: modelReducer('test', { foo: '' }),
+    }));
+
+    const form = TestUtils.renderIntoDocument(
+      <Provider store={store}>
+        <Errors model="test"/>
+      </Provider>
+    );
+
+    it('should not render a component if there are no errors', () => {
+      const divs = TestUtils.scryRenderedDOMComponentsWithTag(form, 'div');
+      assert.lengthOf(divs, 0);
+    });
+  });
+
   describe('displaying custom messages', () => {
     const store = applyMiddleware(thunk)(createStore)(combineReducers({
-      testForm: formReducer('test', {}),
-      test: modelReducer('test'),
+      testForm: formReducer('test', { foo: '' }),
+      test: modelReducer('test', { foo: '' }),
     }));
 
     const form = TestUtils.renderIntoDocument(
@@ -256,6 +274,52 @@ describe('<Errors />', () => {
       TestUtils.Simulate.blur(input);
 
       assert.lengthOf(TestUtils.scryRenderedDOMComponentsWithTag(form, 'span'), 0);
+    });
+
+    it('should support a function that shows based on field and form value', () => {
+      const store = applyMiddleware(thunk)(createStore)(combineReducers({
+        testForm: formReducer('test', {}),
+        test: modelReducer('test'),
+      }));
+
+      const showFn = (field, form) => field.focus || form.submitFailed;
+
+      const form = TestUtils.renderIntoDocument(
+        <Provider store={store}>
+          <form>
+            <Errors model="test.foo" 
+              messages={{
+                required: 'This field is required',
+              }}
+              show={ showFn }
+            />
+            <Field model="test.foo"
+              validators={{
+                required: (v) => v && v.length,
+              }}
+            >
+              <input type="text" />
+            </Field>
+          </form>
+        </Provider>
+      );
+
+      const formElement = TestUtils.findRenderedDOMComponentWithTag(form, 'form');
+      const input = TestUtils.findRenderedDOMComponentWithTag(form, 'input');
+
+      assert.lengthOf(TestUtils.scryRenderedDOMComponentsWithTag(form, 'span'), 0);
+
+      TestUtils.Simulate.focus(input);
+
+      assert.lengthOf(TestUtils.scryRenderedDOMComponentsWithTag(form, 'span'), 1);
+
+      TestUtils.Simulate.blur(input);
+
+      assert.lengthOf(TestUtils.scryRenderedDOMComponentsWithTag(form, 'span'), 0);
+
+      store.dispatch(actions.setSubmitFailed('test'));
+
+      assert.lengthOf(TestUtils.scryRenderedDOMComponentsWithTag(form, 'span'), 1, 'form submit failed');
     });
 
     it('should support a boolean and show if truthy', () => {
@@ -519,6 +583,67 @@ describe('<Errors />', () => {
 
       assert.equal(components[0].innerHTML, 'foo error');
       assert.equal(components[1].innerHTML, 'bar error');
+    });
+  });
+
+  describe('deep model paths', () => {
+    it('should work with deep model paths', () => {
+      const store = applyMiddleware(thunk)(createStore)(combineReducers({
+        forms: combineReducers({
+          testForm: formReducer('forms.test', {}),
+          test: modelReducer('forms.test'),
+        }),
+      }));
+
+      const form = TestUtils.renderIntoDocument(
+        <Provider store={store}>
+          <form>
+            <Errors model="forms.test.foo"
+              messages={{
+                required: 'This field is required',
+              }}
+            />
+            <Field model="forms.test.foo"
+              validators={{
+                required: (v) => v && v.length,
+              }}
+            >
+              <input type="text" />
+            </Field>
+          </form>
+        </Provider>
+      );
+
+      const spans = TestUtils.scryRenderedDOMComponentsWithTag(form, 'span')
+      assert.lengthOf(spans, 1);
+      assert.equal(spans[0].innerHTML, 'This field is required')
+    });
+  });
+
+  describe('single string error messages', () => {
+    it('should work with single string error messages', () => {
+      const store = applyMiddleware(thunk)(createStore)(combineReducers({
+        testForm: formReducer('test', {}),
+        test: modelReducer('test'),
+      }));
+     
+      const form = TestUtils.renderIntoDocument(
+        <Provider store={store}>
+          <Errors model="test" messages={{
+            foo: 'foo',
+            bar: 'bar',
+          }}/>
+        </Provider>
+      );
+
+      store.dispatch(actions.setErrors('test', 'this is a single error message'));
+
+      let error;
+
+      assert.doesNotThrow(() => error = TestUtils
+        .findRenderedDOMComponentWithTag(form, 'span'));
+
+      assert.equal(error.innerHTML, 'this is a single error message');
     });
   });
 });

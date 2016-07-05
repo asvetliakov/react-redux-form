@@ -6,7 +6,10 @@ import { applyMiddleware, combineReducers, createStore } from 'redux';
 import { Provider } from 'react-redux';
 import thunk from 'redux-thunk';
 
-import { Field as NativeField } from '../src/native';
+import {
+  Field as NativeField,
+  Form as NativeForm,
+} from '../src/native';
 import { controls, createFieldClass, formReducer, modelReducer, Field } from '../src';
 
 describe('controls props mapping', () => {
@@ -22,14 +25,6 @@ describe('createFieldClass()', () => {
 });
 
 describe('custom <Field /> components with createFieldClass()', () => {
-  const CustomField = createFieldClass({
-    CustomText: props => ({
-      customOnChange: props.onChange,
-    }),
-    FamiliarText: controls.text,
-    InputFoo: controls.checkbox,
-  });
-
   class CustomText extends Component {
     handleChange(e) {
       const { customOnChange } = this.props;
@@ -63,6 +58,33 @@ describe('custom <Field /> components with createFieldClass()', () => {
   }
 
   FamiliarText.propTypes = { onChange: PropTypes.function };
+
+  const MinifiedText = class MT extends Component {
+    render() {
+      const { onChange } = this.props;
+
+      return (
+        <div>
+          <input onChange={e => onChange(e)} />
+        </div>
+      );
+    }
+  };
+
+  MinifiedText.propTypes = { onChange: PropTypes.function };
+
+  const CustomField = createFieldClass({
+    CustomText: props => ({
+      customOnChange: props.onChange,
+    }),
+    FamiliarText: controls.text,
+    InputFoo: controls.checkbox,
+    MinifiedText: controls.text,
+  }, {
+    componentMap: {
+      MinifiedText,
+    },
+  });
 
   it('should return a Field component class', () => {
     assert.equal(CustomField.constructor, Field.constructor);
@@ -183,6 +205,31 @@ describe('custom <Field /> components with createFieldClass()', () => {
       store.getState().test.foo,
       true);
   });
+
+  it('should work with minified components (no displayName)', () => {
+    const store = applyMiddleware(thunk)(createStore)(combineReducers({
+      testForm: formReducer('test'),
+      test: modelReducer('test', { foo: 'bar' }),
+    }));
+
+    const field = TestUtils.renderIntoDocument(
+      <Provider store={store}>
+        <CustomField model="test.foo">
+          <MinifiedText />
+        </CustomField>
+      </Provider>
+    );
+
+    const control = TestUtils.findRenderedDOMComponentWithTag(field, 'input');
+
+    control.value = 'testing';
+
+    TestUtils.Simulate.change(control);
+
+    assert.equal(
+      store.getState().test.foo,
+      'testing');
+  });
 });
 
 describe('React Native <Field /> components', () => {
@@ -190,7 +237,7 @@ describe('React Native <Field /> components', () => {
     assert.ok(NativeField);
   });
 
-  it('should map native components', () => {
+  it('should map the native field component', () => {
     // Placeholder div, for now
     class TextField extends Component {
       render() {
@@ -199,5 +246,23 @@ describe('React Native <Field /> components', () => {
     }
 
     assert.ok(<NativeField model="foo.bar"><TextField /></NativeField>);
+  });
+
+  it('should render a Form component as a View', () => {
+    const store = applyMiddleware(thunk)(createStore)(combineReducers({
+      testForm: formReducer('test'),
+      test: modelReducer('test', { foo: 'bar' }),
+    }));
+
+    const form = TestUtils.renderIntoDocument(
+      <Provider store={store}>
+        <NativeForm model="test" />
+      </Provider>
+    );
+
+    // Placeholder div, for now
+    const formElement = TestUtils.findRenderedDOMComponentWithTag(form, 'div');
+
+    assert.ok(formElement);
   });
 });

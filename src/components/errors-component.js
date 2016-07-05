@@ -1,17 +1,17 @@
 import React, { Component, PropTypes } from 'react';
 import connect from 'react-redux/lib/components/connect';
-import _get from 'lodash/get';
+import _get from '../utils/get';
 import map from 'lodash/map';
 import compact from 'lodash/compact';
-import iteratee from 'lodash/iteratee';
+import iteratee from 'lodash/_baseIteratee';
 import isArray from 'lodash/isArray';
 import isPlainObject from 'lodash/isPlainObject';
 
-import { getFieldFromState } from '../utils';
+import { getFieldFromState, getForm } from '../utils';
 
-function showErrors(field, show = true) {
+function showErrors(field, form, show = true) {
   if (typeof show === 'function') {
-    return show(field);
+    return show(field, form);
   }
 
   if (!isArray(show)
@@ -24,12 +24,19 @@ function showErrors(field, show = true) {
 }
 
 class Errors extends Component {
-  shouldComponentUpdate({ fieldValue }) {
-    return fieldValue !== this.props.fieldValue;
+  shouldComponentUpdate({ fieldValue, formValue }) {
+    return fieldValue !== this.props.fieldValue
+      || formValue !== this.props.formValue;
   }
 
   mapErrorMessages(errors) {
     const { messages } = this.props;
+
+    if (typeof errors === 'string') {
+      return this.renderError(errors, 'error');
+    }
+
+    if (!errors) return null;
 
     return compact(map(errors, (error, key) => {
       const message = messages[key];
@@ -82,17 +89,20 @@ class Errors extends Component {
         valid,
         errors,
       },
+      formValue,
       show,
       wrapper,
     } = this.props;
 
-    if (!showErrors(fieldValue, show)) {
+    if (!showErrors(fieldValue, formValue, show)) {
       return null;
     }
 
     const errorMessages = valid
       ? null
       : this.mapErrorMessages(errors);
+
+    if (!errorMessages) return null;
 
     return React.createElement(
       wrapper,
@@ -104,6 +114,7 @@ class Errors extends Component {
 Errors.propTypes = {
   // Computed props
   modelValue: PropTypes.any,
+  formValue: PropTypes.object,
   fieldValue: PropTypes.object,
 
   // Provided props
@@ -133,19 +144,20 @@ Errors.defaultProps = {
   show: true,
 };
 
-function selector(state, { model }) {
+function mapStateToProps(state, { model }) {
   const modelString = typeof model === 'function'
     ? model(state)
     : model;
 
+  const formValue = getForm(state, modelString);
   const fieldValue = getFieldFromState(state, modelString);
 
   return {
-    ...state,
     model: modelString,
     modelValue: _get(state, modelString),
+    formValue,
     fieldValue,
   };
 }
 
-export default connect(selector)(Errors);
+export default connect(mapStateToProps)(Errors);

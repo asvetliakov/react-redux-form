@@ -19,6 +19,35 @@ describe('field actions', () => {
     });
   });
 
+  describe('change()', () => {
+    it('should set the retouched property to true upon change after submit', () => {
+      const reducer = formReducer('test');
+      const state = reducer(undefined, actions.setSubmitted('test'));
+
+      assert.containSubset(
+        state,
+        {
+          submitted: true,
+          retouched: false,
+        }, 'not retouched yet');
+
+      const changedState = reducer(state, actions.change('test.foo', 'new'));
+
+      assert.containSubset(
+        changedState,
+        {
+          submitted: true,
+          retouched: true,
+        }, 'form retouched after submit');
+
+      assert.containSubset(
+        changedState.fields.foo,
+        {
+          retouched: true,
+        }, 'field retouched after submit');
+    });
+  });
+
   describe('reset()', () => {
     it('should set the field to the initial field state', () => {
       const reducer = formReducer('test');
@@ -628,11 +657,9 @@ describe('field actions', () => {
           valid: false,
           validity: {
             foo: false,
-            baz: null,
           },
           errors: {
             foo: true,
-            baz: true,
           },
         });
 
@@ -653,6 +680,42 @@ describe('field actions', () => {
             foo: false,
             baz: false,
           },
+        });
+    });
+
+    it('should overwrite the previous validity', () => {
+      const reducer = formReducer('test');
+
+      const oldValidity = {
+        existing: true,
+      };
+
+      const oldState = reducer(
+        undefined,
+        actions.setValidity('test', oldValidity));
+
+      assert.deepEqual(
+        oldState.validity,
+        oldValidity);
+
+      const newValidity = {
+        foo: true,
+        bar: false,
+      };
+
+      const newState = reducer(
+        oldState,
+        actions.setValidity('test', newValidity));
+
+      assert.deepEqual(
+        newState.validity,
+        newValidity);
+
+      assert.deepEqual(
+        newState.errors,
+        {
+          foo: false,
+          bar: true,
         });
     });
   });
@@ -826,11 +889,9 @@ describe('field actions', () => {
           valid: true,
           validity: {
             foo: true,
-            baz: true,
           },
           errors: {
             foo: false,
-            baz: null,
           },
         });
 
@@ -1017,10 +1078,10 @@ describe('field actions', () => {
   });
 
   describe('asyncSetValidity() (thunk)', () => {
-    it('should asynchronously call setValidity() action', testDone => {
+    it('should asynchronously call setValidity() action', (testDone) => {
       const reducer = formReducer('test');
       const dispatch = action => {
-        if (action.type === actionTypes.SET_VALIDITY) {
+        if (action.type === actionTypes.BATCH) {
           testDone(assert.containSubset(
             reducer(undefined, action)
               .fields.foo,
@@ -1049,7 +1110,7 @@ describe('field actions', () => {
     it('should work with forms to asynchronously call setValidity() action', testDone => {
       const reducer = formReducer('test');
       const dispatch = action => {
-        if (action.type === actionTypes.SET_VALIDITY) {
+        if (action.type === actionTypes.BATCH) {
           testDone(assert.containSubset(
             reducer(undefined, action),
             {
@@ -1080,7 +1141,7 @@ describe('field actions', () => {
         const executedActions = [];
 
         const reducer = formReducer('test');
-        const dispatch = action => {
+        const dispatch = (action) => {
           executedActions.push(action);
           const state = reducer(undefined, action);
 
@@ -1088,12 +1149,12 @@ describe('field actions', () => {
             pendingStates.push(action.pending);
 
             assert.equal(state.fields.foo.pending, action.pending);
+          } else if (action.type === actionTypes.BATCH) {
+            pendingStates.push(state.fields.foo.pending);
 
-            if (action.pending === false) {
-              testDone(assert.deepEqual(
-                pendingStates,
-                [true, false]));
-            }
+            testDone(assert.deepEqual(
+              pendingStates,
+              [true, false]));
           }
         };
 
@@ -1118,12 +1179,12 @@ describe('field actions', () => {
             pendingStates.push(action.pending);
 
             assert.equal(state.pending, action.pending);
+          } else if (action.type === actionTypes.BATCH) {
+            pendingStates.push(state.pending);
 
-            if (action.pending === false) {
-              testDone(assert.deepEqual(
-                pendingStates,
-                [true, false]));
-            }
+            testDone(assert.deepEqual(
+              pendingStates,
+              [true, false]));
           }
         };
 

@@ -1,16 +1,18 @@
-import _get from 'lodash/get';
+import _get from '../utils/get';
 import every from 'lodash/every';
 import icepick from 'icepick';
 import isBoolean from 'lodash/isBoolean';
-import isEqual from 'lodash/isEqual';
+import arraysEqual from '../utils/arrays-equal';
 import isPlainObject from 'lodash/isPlainObject';
 import isFunction from 'lodash/isFunction';
 import map from 'lodash/map';
-import mapValues from 'lodash/mapValues';
-import toPath from 'lodash/toPath';
-import flatten from 'flat';
+import mapValues from '../utils/map-values';
+import toPath from '../utils/to-path';
+import pathStartsWith from '../utils/path-starts-with';
+import flatten from '../utils/flatten';
 
 import actionTypes from '../action-types';
+import actions from '../actions/field-actions';
 import { isValid } from '../utils';
 
 const initialFieldState = {
@@ -20,11 +22,15 @@ const initialFieldState = {
   pending: false,
   pristine: true,
   submitted: false,
+  submitFailed: false,
+  retouched: false,
   touched: false,
   untouched: true, // will be deprecated
   valid: true,
   validating: false,
+  validated: false,
   viewValue: null,
+  array: false,
   validity: {},
   errors: {},
 };
@@ -32,8 +38,6 @@ const initialFieldState = {
 const initialFormState = {
   ...initialFieldState,
   fields: {},
-  submitFailed: false,
-  retouched: false,
 };
 
 function getField(state, path) {
@@ -69,6 +73,19 @@ function setField(state, localPath, props) {
       },
     },
   });
+}
+
+function setInField(state, localPath, props) {
+  if (!localPath.length) {
+    return icepick.assign(state, props);
+  }
+
+  const field = getField(state, localPath);
+
+  return icepick.setIn(
+    state,
+    ['fields', localPath.join('.')],
+    icepick.assign(field, props));
 }
 
 function resetField(state, localPath) {
@@ -123,7 +140,7 @@ function _createFormReducer(model, initialState, stateEnhancer) {
 
     const path = toPath(action.model);
 
-    if (!isEqual(path.slice(0, modelPath.length), modelPath)) {
+    if (!arraysEqual(path.slice(0, modelPath.length), modelPath)) {
       return state;
     }
 
@@ -139,19 +156,91 @@ function _createFormReducer(model, initialState, stateEnhancer) {
         return setField(state, localPath, {
           blur: false, // will be deprecated
           focus: true,
+          array: Array.isArray(action.value),
         });
 
       case actionTypes.CHANGE: {
         if (action.silent) return state;
 
-        const setDirtyState = icepick.merge(state, {
+        let setFieldDirtyState = setField(state, localPath, {
           dirty: true, // will be deprecated
           pristine: false,
+          value: action.value,
+          validated: false,
+          retouched: state.submitted || state.submitFailed,
         });
 
-        return setField(setDirtyState, localPath, {
+        setFieldDirtyState = icepick.assoc(
+          setFieldDirtyState,
+          ['fields'],
+          mapValues(setFieldDirtyState.fields, (field, fieldKey) =>
+            (pathStartsWith(fieldKey, localPath)
+              ? icepick.merge(field, { validated: false })
+              : field)
+          ));
+
+        if (action.removeKeys) {
+          const persistKeys = [];
+
+          const removeKeys = Object.keys(state.fields).filter((fieldKey) => {
+            for (const removeKey of action.removeKeys) {
+              const removeKeyPath = localPath.concat(removeKey);
+              if (pathStartsWith(fieldKey, removeKeyPath)) return true;
+            }
+
+            if (pathStartsWith(fieldKey, localPath)) {
+              persistKeys.push(fieldKey);
+            }
+
+            return false;
+          });
+
+          removeKeys.forEach((removeKey) => {
+            setFieldDirtyState = icepick.updateIn(
+              setFieldDirtyState,
+              ['fields'],
+              (field) => icepick.dissoc(field, removeKey));
+          });
+
+          const persistKeysIndexMapping = {};
+          let nextIndex = -1;
+
+          // Note: this code is really hairy but will be
+          // completely refactored in V1.0.
+          persistKeys.forEach((persistKey) => {
+            const newPersistKeyPath = toPath(persistKey);
+            const currentIndex = newPersistKeyPath[localPath.length];
+            const mappedIndex = persistKeysIndexMapping[currentIndex];
+
+            if (typeof mappedIndex !== 'undefined') {
+              newPersistKeyPath[localPath.length] = mappedIndex;
+            } else {
+              newPersistKeyPath[localPath.length] =
+                persistKeysIndexMapping[currentIndex] =
+                ++nextIndex;
+            }
+
+            const persistField = getField(state, persistKey);
+
+            // Remove old key
+            setFieldDirtyState = icepick.updateIn(
+              setFieldDirtyState,
+              ['fields'],
+              (field) => icepick.dissoc(field, persistKey));
+
+            // Update field to new key
+            setFieldDirtyState = setInField(
+              setFieldDirtyState,
+              newPersistKeyPath,
+              persistField);
+          });
+        }
+
+        return icepick.merge(setFieldDirtyState, {
           dirty: true, // will be deprecated
           pristine: false,
+          valid: formIsValid(setFieldDirtyState),
+          retouched: state.submitted || state.submitFailed,
         });
       }
 
@@ -172,13 +261,14 @@ function _createFormReducer(model, initialState, stateEnhancer) {
         const fieldState = setField(state, localPath, {
           focus: false,
           touched: true,
-          retouched: state.submitted || state.submitFailed,
           blur: true, // will be deprecated
+          retouched: state.submitted || state.submitFailed,
           untouched: false, // will be deprecated
         });
 
         return icepick.merge(fieldState, {
           touched: true,
+          retouched: state.submitted || state.submitFailed,
           untouched: false, // will be deprecated
         });
       }
@@ -193,24 +283,16 @@ function _createFormReducer(model, initialState, stateEnhancer) {
 
       case actionTypes.SET_VALIDITY: {
         if (isPlainObject(action.validity)) {
-          validity = icepick.merge(
-            getField(state, localPath).validity,
-            action.validity
-          );
-
-          errors = {
-            ...getField(state, localPath).errors,
-            ...mapValues(action.validity, valid => !valid),
-          };
+          errors = mapValues(action.validity, valid => !valid);
         } else {
-          validity = action.validity;
           errors = !action.validity;
         }
 
-        const formIsValidState = setField(state, localPath, {
+        const formIsValidState = setInField(state, localPath, {
           errors,
-          validity,
+          validity: action.validity,
           valid: isBoolean(errors) ? !errors : every(errors, error => !error),
+          validated: true,
         });
 
         return icepick.merge(formIsValidState, {
@@ -219,33 +301,24 @@ function _createFormReducer(model, initialState, stateEnhancer) {
       }
 
       case actionTypes.SET_FIELDS_VALIDITY:
-        return map(action.fieldsValidity, (fieldValidity, field) => ({
-          type: actionTypes.SET_VALIDITY,
-          model: `${model}.${field}`,
-          validity: fieldValidity,
-          options: action.options,
-        })).reduce(formReducer, state);
+        return map(action.fieldsValidity, (fieldValidity, field) =>
+          actions.setValidity(field.length
+            ? `${model}.${field}`
+            : model, fieldValidity, action.options)
+        ).reduce(formReducer, state);
 
       case actionTypes.SET_ERRORS: {
         if (isPlainObject(action.errors)) {
-          validity = {
-            ...getField(state, localPath).validity,
-            ...mapValues(action.errors, error => !error),
-          };
-
-          errors = icepick.merge(
-            getField(state, localPath).errors,
-            action.errors
-          );
+          validity = mapValues(action.errors, error => !error);
         } else {
           validity = !action.errors;
-          errors = action.errors;
         }
 
-        const setErrorsState = setField(state, localPath, {
-          errors,
+        const setErrorsState = setInField(state, localPath, {
+          errors: action.errors,
           validity,
           valid: isValid(validity),
+          validated: true,
         });
 
         return icepick.merge(setErrorsState, {
@@ -307,7 +380,9 @@ function _createFormReducer(model, initialState, stateEnhancer) {
           );
         }
 
-        return resetValidityState;
+        return icepick.merge(resetValidityState, {
+          valid: formIsValid(resetValidityState),
+        });
       }
 
       case actionTypes.SET_PRISTINE: {
@@ -345,23 +420,43 @@ function _createFormReducer(model, initialState, stateEnhancer) {
           untouched: true, // will be deprecated
         });
 
-      case actionTypes.SET_SUBMITTED:
-        return setField(state, localPath, {
+      case actionTypes.SET_SUBMITTED: {
+        const submittedState = {
           pending: false,
           submitted: !!action.submitted,
           submitFailed: false,
           touched: true,
           untouched: false, // will be deprecated
-        });
+        };
 
-      case actionTypes.SET_SUBMIT_FAILED:
-        return setField(state, localPath, {
+        if (!localPath.length) {
+          return icepick.merge(state, {
+            ...submittedState,
+            fields: mapValues(state.fields, (field) => icepick.merge(field, submittedState)),
+          });
+        }
+
+        return setField(state, localPath, submittedState);
+      }
+
+      case actionTypes.SET_SUBMIT_FAILED: {
+        const submitFailedState = {
           pending: false,
           submitted: false,
           submitFailed: true,
           touched: true,
-          untouched: false, // will be deprecated
-        });
+          untouched: false,
+        };
+
+        if (!localPath.length) {
+          return icepick.merge(state, {
+            ...submitFailedState,
+            fields: mapValues(state.fields, (field) => icepick.merge(field, submitFailedState)),
+          });
+        }
+
+        return setField(state, localPath, submitFailedState);
+      }
 
       case actionTypes.SET_INITIAL:
       case actionTypes.RESET:
@@ -394,8 +489,8 @@ function createFormReducer(...args) {
 
 export {
   createFormReducer,
-  _createFormReducer as formReducer,
   initialFieldState,
   initialFormState,
   getField,
 };
+export default _createFormReducer;

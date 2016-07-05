@@ -1,20 +1,20 @@
 import React, { Component, PropTypes } from 'react';
+import shallowCompare from 'react/lib/shallowCompare';
 import connect from 'react-redux/lib/components/connect';
 
-import _get from 'lodash/get';
+import _get from '../utils/get';
 import identity from 'lodash/identity';
-import isEqual from 'lodash/isEqual';
+import omit from 'lodash/omit';
 
 import actions from '../actions';
 import Control from './control-component';
 import { isMulti } from '../utils';
-import { sequenceEventActions } from '../utils/sequence';
 
 const {
   change,
 } = actions;
 
-function selector(state, { model }) {
+function mapStateToProps(state, { model }) {
   const modelString = typeof model === 'function'
     ? model(state)
     : model;
@@ -29,7 +29,7 @@ function isChecked(props) {
   if (isMulti(props.model)) {
     return (props.modelValue || [])
       .filter((item) =>
-        isEqual(item, props.value))
+        item === props.value)
       .length;
   }
 
@@ -39,31 +39,56 @@ function isChecked(props) {
 const controlPropsMap = {
   default: (props) => controlPropsMap.text(props),
   checkbox: (props) => ({
+    name: props.name || props.model,
+    checked: props.defaultChecked
+      ? props.checked
+      : isChecked(props),
     ...props,
-    name: props.model,
-    checked: isChecked(props),
   }),
   radio: (props) => ({
-    ...props,
-    name: props.model,
-    checked: isEqual(props.modelValue, props.value),
+    name: props.name || props.model,
+    checked: props.defaultChecked
+      ? props.checked
+      : props.modelValue === props.value,
     value: props.value,
+    ...props,
   }),
   select: (props) => ({
-    ...props,
-    name: props.model,
+    name: props.name || props.model,
     value: props.modelValue,
+    ...props,
   }),
   text: (props) => ({
+    value: props.updateOn === 'change'
+      && !props.defaultValue
+      && !props.hasOwnProperty('value')
+      ? props.modelValue || ''
+      : props.value,
+    name: props.name || props.model,
     ...props,
-    defaultValue: props.modelValue,
-    name: props.model,
+  }),
+  file: (props) => ({
+    name: props.name || props.model,
+    ...props,
   }),
   textarea: (props) => controlPropsMap.text(props),
+  reset: (props) => ({
+    onClick: (event) => {
+      event.preventDefault();
+
+      props.dispatch(actions.reset(props.model));
+    },
+  }),
 };
 
-function getControlType(control, options) {
+function getControlType(control, props, options) {
+  const { componentMap } = props;
   const { controlPropsMap: _controlPropsMap } = options;
+
+  const controlDisplayNames = Object.keys(componentMap).filter(
+    (controlName) => control.type === componentMap[controlName]);
+
+  if (controlDisplayNames.length) return controlDisplayNames[0];
 
   try {
     let controlDisplayName = control.constructor.displayName
@@ -81,69 +106,69 @@ function getControlType(control, options) {
   }
 }
 
-function createFieldProps(control, props, options) {
-  const { model, modelValue } = props;
-  const controlType = getControlType(control, options);
-
-  const { controlPropsMap: _controlPropsMap } = options;
-
-  if (!controlType) {
-    return false;
-  }
-
-  return _controlPropsMap[controlType]({
-    model,
-    modelValue,
-    ...control.props,
-    ...sequenceEventActions(control, props, options),
-  });
-}
-
-function createFieldControlComponent(control, props, options) {
-  if (!control || !control.props || Object.hasOwnProperty(control.props, 'modelValue')) {
-    return control;
-  }
-
-  const controlProps = createFieldProps(control, props, options);
-
-  if (!controlProps) {
-    return React.cloneElement(
-      control, {
-        children: React.Children.map(
-          control.props.children,
-          child => createFieldControlComponent(
-            child,
-            {
-              ...props,
-              ...(child && child.props
-                ? child.props
-                : {}),
-            },
-            options
-          )
-        ),
-      }
+/* eslint-disable no-use-before-define */
+function mapFieldChildrenToControl(children, props, options) {
+  if (React.Children.count(children) > 1) {
+    return React.Children.map(
+      children,
+      (child) => createFieldControlComponent(
+        child,
+        {
+          ...props,
+          ...(child && child.props
+            ? child.props
+            : {}),
+        },
+        options
+      )
     );
   }
 
+  return createFieldControlComponent(children, props, options);
+}
+
+function createFieldControlComponent(control, props, options) {
+  if (!control
+    || !control.props
+    || control instanceof Control) {
+    return control;
+  }
+
   /* eslint-disable react/prop-types */
-  // TODO: Track down where to set correct propType for modelValue
+  const {
+    mapProps = options.controlPropsMap[getControlType(control, props, options)],
+  } = props;
+
+  const controlProps = omit(props, ['children', 'className']);
+
+  if (!mapProps) {
+    return React.cloneElement(
+      control,
+      null,
+      mapFieldChildrenToControl(control.props.children, props, options)
+    );
+  }
+
   return (
     <Control
       {...controlProps}
       modelValue={props.modelValue}
       control={control}
+      controlProps={control.props}
+      component={control.type}
+      mapProps={mapProps}
     />
   );
   /* eslint-enable react/prop-types */
 }
+/* eslint-enable no-use-before-define */
 
 function getFieldWrapper(props) {
   if (props.component) {
     return props.component;
   }
 
-  if (props.className || props.children.length > 1) {
+  if (props.className || (props.children && props.children.length > 1)) {
     return 'div';
   }
 
@@ -159,6 +184,10 @@ function createFieldClass(customControlPropsMap = {}, defaultProps = {}) {
   };
 
   class Field extends Component {
+    shouldComponentUpdate(nextProps, nextState) {
+      return shallowCompare(this, nextProps, nextState);
+    }
+
     render() {
       const { props } = this;
       const component = getFieldWrapper(props);
@@ -173,7 +202,10 @@ function createFieldClass(customControlPropsMap = {}, defaultProps = {}) {
         );
       }
 
-      return createFieldControlComponent(React.Children.only(props.children), props, options);
+      return createFieldControlComponent(
+        React.Children.only(props.children),
+        props,
+        options);
     }
   }
 
@@ -201,6 +233,9 @@ function createFieldClass(customControlPropsMap = {}, defaultProps = {}) {
       PropTypes.func,
       PropTypes.object,
     ]),
+    modelValue: PropTypes.any,
+    mapProps: PropTypes.func,
+    componentMap: PropTypes.object,
   };
 
   Field.defaultProps = {
@@ -209,10 +244,11 @@ function createFieldClass(customControlPropsMap = {}, defaultProps = {}) {
     asyncValidateOn: 'blur',
     parser: identity,
     changeAction: change,
+    componentMap: {},
     ...defaultProps,
   };
 
-  return connect(selector)(Field);
+  return connect(mapStateToProps)(Field);
 }
 
 export {

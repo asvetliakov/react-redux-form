@@ -1,19 +1,19 @@
 import identity from 'lodash/identity';
-import capitalize from 'lodash/capitalize';
-import partial from 'lodash/partial';
-import mapValues from 'lodash/mapValues';
-import compose from 'lodash/fp/compose';
-import isEqual from 'lodash/isEqual';
+import capitalize from '../utils/capitalize';
+import mapValues from '../utils/map-values';
+import compose from 'redux/lib/compose';
+import merge from '../utils/merge';
 import icepick from 'icepick';
+import shallowEqual from 'react-redux/lib/utils/shallowEqual';
 
-import { isMulti, getValue, getValidity } from './index';
+import { isMulti, getValue, getValidity, invertValidity } from './index';
 import actions from '../actions';
 
 const {
   asyncSetValidity,
   blur,
   focus,
-  setValidity,
+  setErrors,
 } = actions;
 
 function persistEventWithCallback(callback) {
@@ -33,7 +33,8 @@ const modelValueUpdaterMap = {
 
     if (isMulti(model)) {
       const valueWithItem = modelValue || [];
-      const valueWithoutItem = (valueWithItem || []).filter(item => !isEqual(item, eventValue));
+      const valueWithoutItem = (valueWithItem || [])
+        .filter(item => item !== eventValue);
       const value = (valueWithoutItem.length === valueWithItem.length)
         ? icepick.push(valueWithItem, eventValue)
         : valueWithoutItem;
@@ -47,9 +48,8 @@ const modelValueUpdaterMap = {
 };
 
 
-function isReadOnlyValue(control) {
-  return control.type === 'input' // verify === is okay
-    && ~['radio', 'checkbox'].indexOf(control.props.type);
+function isReadOnlyValue(controlProps) {
+  return ~['radio', 'checkbox'].indexOf(controlProps.type);
 }
 
 function deprecateUpdateOn(updateOn) {
@@ -59,20 +59,22 @@ function deprecateUpdateOn(updateOn) {
   return updateOn;
 }
 
-function sequenceEventActions(control, props) {
+function sequenceEventActions(props) {
   const {
     dispatch,
     model,
-    updateOn,
-    parser,
-    changeAction,
+    updateOn = 'change',
+    parser = identity,
+    changeAction = identity,
+    controlProps = {},
+    fieldValue,
   } = props;
 
   const {
     onChange = identity,
     onBlur = identity,
     onFocus = identity,
-  } = control.props;
+  } = controlProps;
 
   const controlOnChange = persistEventWithCallback(onChange);
   const controlOnBlur = persistEventWithCallback(onBlur);
@@ -80,7 +82,7 @@ function sequenceEventActions(control, props) {
 
   const updateOnEventHandler = (typeof updateOn === 'function')
     ? 'onChange'
-    : `on${capitalize(props.updateOn)}`;
+    : `on${capitalize(updateOn)}`;
   const validateOn = `on${capitalize(props.validateOn)}`;
   const asyncValidateOn = `on${capitalize(props.asyncValidateOn)}`;
 
@@ -89,32 +91,57 @@ function sequenceEventActions(control, props) {
     : identity;
 
   const eventActions = {
-    onFocus: [() => dispatch(focus(model))],
-    onBlur: [() => dispatch(blur(model))],
+    onFocus: [],
+    onBlur: [],
     onChange: [],
     onLoad: [], // pseudo-event
     onSubmit: [], // pseudo-event
   };
 
-  const controlChangeMethod = partial(changeAction, model);
-  const modelValueUpdater = modelValueUpdaterMap[control.props.type]
+  const controlChangeMethod = (...args) => changeAction(model, ...args);
+  const modelValueUpdater = modelValueUpdaterMap[controlProps.type]
     || modelValueUpdaterMap.default;
 
-  if (control.props.defaultValue) {
+  if (controlProps.defaultValue) {
     eventActions.onLoad.push(() => dispatch(
-      actions.change(model, control.props.defaultValue)));
+      actions.change(model, controlProps.defaultValue)));
+  }
+
+  let changeActionCreator;
+
+  switch (updateOnEventHandler) {
+    case 'onBlur':
+      changeActionCreator = (modelValue) => actions.batch(model, [
+        blur(model),
+        controlChangeMethod(modelValue),
+      ]);
+      eventActions.onFocus.push(() => dispatch(focus(model)));
+      break;
+    case 'onFocus':
+      changeActionCreator = (modelValue) => actions.batch(model, [
+        focus(model),
+        controlChangeMethod(modelValue),
+      ]);
+      eventActions.onBlur.push(() => dispatch(blur(model)));
+      break;
+    default:
+      changeActionCreator = (modelValue) => controlChangeMethod(modelValue);
+      eventActions.onBlur.push(() => dispatch(blur(model)));
+      eventActions.onFocus.push(() => dispatch(focus(model)));
+      break;
   }
 
   if (props.validators || props.errors) {
     const dispatchValidate = value => {
-      if (props.validators) {
-        dispatch(setValidity(model, getValidity(props.validators, value)));
-      }
+      const fieldValidity = getValidity(props.validators, value);
+      const fieldErrors = getValidity(props.errors, value);
 
-      if (props.errors) {
-        dispatch(setValidity(model, getValidity(props.errors, value), {
-          errors: true,
-        }));
+      const errors = props.validators
+        ? merge(invertValidity(fieldValidity), fieldErrors)
+        : fieldErrors;
+
+      if (fieldValue && !shallowEqual(errors, fieldValue.errors)) {
+        dispatch(setErrors(model, errors));
       }
 
       return value;
@@ -129,7 +156,11 @@ function sequenceEventActions(control, props) {
       mapValues(props.asyncValidators,
         (validator, key) => dispatch(asyncSetValidity(model,
           (_, done) => {
-            const outerDone = valid => done({ [key]: valid });
+            const outerDone = (valid) => {
+              const validity = icepick.merge(fieldValue.validity, { [key]: valid });
+
+              done(validity);
+            };
 
             validator(getValue(value), outerDone);
           })
@@ -143,27 +174,28 @@ function sequenceEventActions(control, props) {
   }
 
   const dispatchChange = (event) => {
-    const modelValue = isReadOnlyValue(control)
-      ? modelValueUpdater(props, control.props.value)
+    const modelValue = isReadOnlyValue(controlProps)
+      ? modelValueUpdater(props, controlProps.value)
       : event;
 
-    dispatch(controlChangeMethod(modelValue));
+    dispatch(changeActionCreator(modelValue));
 
     return modelValue;
   };
 
   eventActions.onSubmit.push(updaterFn(dispatchChange));
 
-  if (!isReadOnlyValue(control)) {
+  if (!isReadOnlyValue(controlProps)) {
     eventActions[updateOnEventHandler].push(
       compose(
         updaterFn(dispatchChange),
-        partial(modelValueUpdater, props),
+        (...args) => modelValueUpdater(props, ...args),
         parser,
         getValue,
         controlOnChange));
   } else {
     eventActions[updateOnEventHandler].push(updaterFn(dispatchChange));
+    eventActions[updateOnEventHandler].push(controlOnChange);
   }
   eventActions.onBlur.push(controlOnBlur);
   eventActions.onFocus.push(controlOnFocus);
